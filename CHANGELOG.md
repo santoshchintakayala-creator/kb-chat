@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 (2026-10-20)
+
+- Widget styles are scoped under `.kbc` and shielded from host-page element styles; default font is
+  now a system font stack (the old `inherit` default made font rules invalid). Theme with `html .kbc`.
+
 ## 0.1.1 (2026-10-20)
 
 - Knowledge-base fallback now needs the answer to match at least half of the question’s meaningful

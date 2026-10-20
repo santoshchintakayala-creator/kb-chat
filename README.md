@@ -88,8 +88,10 @@ or `https://` URLs. Anything else is shown as plain text.
 | `storageKey` | `kb-chat` | Session storage key for the conversation |
 | `accent` | `#1a56db` | Main color |
 
-Theme further with CSS custom properties on `.kbc` (`--kbc-accent`, `--kbc-head-bg`, `--kbc-ink`,
-`--kbc-bot`, `--kbc-font`, `--kbc-bottom`, …). The returned object has `open()`, `close()` and `ask(text)`.
+Theme further with CSS custom properties, written as `html .kbc { --kbc-accent: #…; }` so your values
+win whatever the stylesheet order (`--kbc-accent`, `--kbc-head-bg`, `--kbc-ink`, `--kbc-bot`, `--kbc-font`,
+`--kbc-bottom`, …). All widget rules are scoped under `.kbc`, so a site's generic `p`, `h2`, `button` or
+`textarea` styles don't leak in. The returned object has `open()`, `close()` and `ask(text)`.
 
 ## Server protocol
 
