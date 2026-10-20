@@ -44,6 +44,9 @@ test('retrieval finds the right entry with synonyms and plural forms', () => {
   assert.equal(search(index, 'what forms of payment do you take')[0].entry.q, 'How can I pay?');
   assert.equal(exactMatch(index, 'what services do you offer')?.q, 'What services do you offer?');
   assert.equal(search(index, 'capital of france').length, 0);
+  const pay = search(index, 'what payment methods do you take')[0];
+  assert.equal(pay.entry.q, 'How can I pay?');
+  assert.equal(pay.coverage, 1);
 });
 
 // --- handler ---------------------------------------------------------------------------
@@ -111,6 +114,9 @@ test('without a key it answers from the knowledge base or refuses', async () => 
   assert.equal(res.text(), 'Yes, kitchen, bathroom and main lines.');
   res = mockRes();
   await handler(ask('who won the world series'), res);
+  assert.equal(res.text(), kb.refusal);
+  res = mockRes();
+  await handler(ask('can you help me with my calculus homework'), res);
   assert.equal(res.text(), kb.refusal);
   res = mockRes();
   await handler(ask('thanks!'), res);

@@ -4,7 +4,9 @@
 const STOP = new Set(('a an and are as at be but by can could did do does doing for from had has have how i if in ' +
   'into is it its me my of on or our ours please should so that the their them there these they this to us ' +
   'was we were what when where which who why will with would you your yours about any get got just like need ' +
-  'want im ive id dont does doesnt am then than too very also').split(' '));
+  'want im ive id dont does doesnt am then than too very also help question tell know thing things ' +
+  'something anything really maybe hi hello hey thanks thank ok okay take accept method way kind type ' +
+  'option sort use one ones').split(' '));
 
 export function normalize(text) {
   return String(text || '')
@@ -46,23 +48,26 @@ export function buildIndex(kb) {
   return { docs, synonyms, idf };
 }
 
-function expand(index, tokens) {
-  const out = new Set(tokens);
-  for (const t of tokens) for (const s of index.synonyms.get(t) || []) out.add(s);
-  return [...out];
-}
-
-/** Score every entry for a query; returns [{entry, score}] best first. */
+/**
+ * Score every entry for a query; returns [{entry, score, coverage}] best first.
+ * coverage = share of the query's meaningful words that the entry matched (directly or by synonym).
+ */
 export function search(index, query, k = 5) {
-  const tokens = expand(index, tokenize(query));
-  if (!tokens.length) return [];
+  const groups = [...new Set(tokenize(query))].map(t => [t, ...(index.synonyms.get(t) || [])]);
+  if (!groups.length) return [];
   const scored = index.docs.map(d => {
-    let score = 0;
-    for (const t of tokens) {
-      if (d.strong.has(t)) score += 2 * index.idf(t);
-      else if (d.weak.has(t)) score += 0.6 * index.idf(t);
+    let score = 0, covered = 0;
+    const counted = new Set();
+    for (const group of groups) {
+      let hit = false;
+      for (const t of group) {
+        if (d.strong.has(t)) { if (!counted.has(t)) score += 2 * index.idf(t); hit = true; }
+        else if (d.weak.has(t)) { if (!counted.has(t)) score += 0.6 * index.idf(t); hit = true; }
+        counted.add(t);
+      }
+      if (hit) covered++;
     }
-    return { entry: d.entry, score };
+    return { entry: d.entry, score, coverage: covered / groups.length };
   }).filter(r => r.score > 0);
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, k);

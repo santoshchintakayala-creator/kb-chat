@@ -10,6 +10,7 @@ const DEFAULTS = {
   temperature: 0.2,
   contextEntries: 10,
   fallbackMinScore: 2.5,
+  fallbackMinCoverage: 0.5,
   rateLimit: { windowMs: 10 * 60 * 1000, max: 30 },
   timeoutMs: 25000,
 };
@@ -143,7 +144,7 @@ export function createChatHandler(options = {}) {
       return [/^(thanks|thank you|thx)/i.test(question.trim()) ? (kb.thanksText || 'You’re welcome! Anything else I can help with?') : (kb.greeting || 'Hi! How can I help?'), 'kb', starters.slice(0, 3)];
     }
     const best = related[0];
-    if (best && best.score >= cfg.fallbackMinScore) return [best.entry.a, 'kb', related.slice(1, 4).map(r => r.entry.q)];
+    if (best && best.score >= cfg.fallbackMinScore && best.coverage >= cfg.fallbackMinCoverage) return [best.entry.a, 'kb', related.slice(1, 4).map(r => r.entry.q)];
     if (upstreamFailed && kb.errorText) return [kb.errorText, 'kb', starters.slice(0, 3)];
     return [refusal, 'refusal', starters.slice(0, 3)];
   }
