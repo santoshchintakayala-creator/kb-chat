@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 (2026-10-20)
+
+- Echo fix: half-duplex by default. The caller's mic is muted while the receptionist talks (detected from
+  the incoming RTP audio level, with OpenAI's output_audio_buffer events as a fallback), so a phone speaker
+  can't feed the receptionist's own voice back in. Tap the picture to interrupt. `data-duplex="full"` opts out.
+- Caller captions appear only for turns the receptionist answers; noise turns it ignores (wait_for_user)
+  never show, even if the transcriber "heard" words in the noise.
+- Default speech threshold raised to 0.7.
+
 ## 0.3.1 (2026-10-20)
 
 - More natural voice: phone instructions rewritten in OpenAI's recommended sections (personality and

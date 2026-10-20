@@ -70,7 +70,7 @@ test('POST mints a short-lived client secret with the right session', async () =
   assert.equal(body.session.audio.output.voice, 'marin');
   const td = body.session.audio.input.turn_detection;
   assert.equal(td.type, 'server_vad');
-  assert.equal(td.threshold, 0.65);
+  assert.equal(td.threshold, 0.7);
   assert.equal(td.silence_duration_ms, 650);
   assert.equal(td.interrupt_response, true);
   assert.equal(body.session.audio.input.noise_reduction.type, 'near_field');

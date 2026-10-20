@@ -1,6 +1,6 @@
 {
   "name": "kb-chat",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Reusable AI chat widget and guarded server handler that answers only from a business knowledge base.",
   "private": true,
   "type": "module",

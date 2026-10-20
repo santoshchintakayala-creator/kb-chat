@@ -91,6 +91,10 @@ isolation (where supported); turn detection needs louder speech than OpenAI's de
 a silent `wait_for_user` tool it calls instead of replying to noise, TV or other people. Noise-only
 transcripts are kept out of the captions.
 
+**Echo:** by default the call is half duplex: the caller's mic is muted while the receptionist is
+speaking, so a phone on speaker can't feed its voice back in. Callers tap the picture to interrupt. Use
+`data-duplex="full"` on the script tag for headset setups where barge-in by voice matters more.
+
 **Picking a voice:** buttons with `data-voice-option="cedar"` (any allowed voice) let a visitor choose;
 the choice is remembered in the browser and used for every call button on the site.
 Calls need HTTPS (or localhost) and microphone permission. Rate limit: 6 calls per 10 minutes per IP.

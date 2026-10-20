@@ -7,7 +7,7 @@ const DEFAULTS = {
   speed: 1.0,
   transcriptionModel: 'gpt-4o-mini-transcribe',
   // Turn detection tuned for phones in real rooms: louder speech needed to count as a turn.
-  vadThreshold: 0.65,
+  vadThreshold: 0.7,
   prefixPaddingMs: 300,
   silenceDurationMs: 650,
   noiseReduction: 'near_field',

@@ -37,10 +37,12 @@ export function createVoiceCall(options = {}) {
     minRingMs: 5000, // pick up on the second ring
     connectTimeoutMs: 20000,
     voice: '', // optional: one of the voices the server allows
+    halfDuplex: true, // mute the caller's mic while the receptionist talks, so a phone speaker can't echo back into it
     voiceStorageKey: 'kb-voice-voice', // remembers a voice picked with [data-voice-option]
     ...Object.fromEntries(Object.entries(options).filter(([, v]) => v !== undefined && v !== '')),
   };
   for (const k of ['minRingMs', 'connectTimeoutMs']) if (typeof opt[k] === 'string') opt[k] = parseFloat(opt[k]) || 0;
+  if (typeof opt.halfDuplex === 'string') opt.halfDuplex = opt.halfDuplex !== 'false' && opt.halfDuplex !== 'full';
 
   let config = { enabled: true, title: opt.title || 'Call', subtitle: opt.subtitle || 'AI receptionist', phone: '', phoneHref: '', maxCallSeconds: 300 };
   let call = null; // the active call's state
@@ -54,9 +56,10 @@ export function createVoiceCall(options = {}) {
     <section class="kbv-screen" role="dialog" aria-modal="true" aria-labelledby="kbv-name" aria-describedby="kbv-status">
       <div class="kbv-top"><span class="kbv-badge">AI receptionist · demo</span><button type="button" class="kbv-x" aria-label="Close">${svg('close')}</button></div>
       <div class="kbv-who">
-        <div class="kbv-avatar-wrap"><span class="kbv-ring"></span><span class="kbv-ring kbv-ring2"></span><span class="kbv-avatar"></span></div>
+        <button type="button" class="kbv-avatar-wrap" aria-label="Interrupt" tabindex="-1"><span class="kbv-ring"></span><span class="kbv-ring kbv-ring2"></span><span class="kbv-avatar"></span></button>
         <h2 class="kbv-name" id="kbv-name"></h2>
         <p class="kbv-status" id="kbv-status" role="status" aria-live="polite"></p>
+        <p class="kbv-hint" aria-hidden="true">Tap the picture to interrupt</p>
       </div>
       <div class="kbv-captions" aria-live="off"></div>
       <div class="kbv-note" hidden></div>
@@ -72,6 +75,7 @@ export function createVoiceCall(options = {}) {
       <a class="kbv-real" hidden></a>
     </section>`;
   document.body.appendChild(root);
+  root.classList.toggle('kbv-half', !!opt.halfDuplex);
   const $ = s => root.querySelector(s);
   const statusEl = $('.kbv-status'), captions = $('.kbv-captions'), note = $('.kbv-note');
 
@@ -80,6 +84,7 @@ export function createVoiceCall(options = {}) {
   $('.kbv-close').addEventListener('click', close);
   $('.kbv-again').addEventListener('click', () => start(lastOpener));
   $('.kbv-mute').addEventListener('click', toggleMute);
+  $('.kbv-avatar-wrap').addEventListener('click', () => interrupt(call));
   $('.kbv-cc').addEventListener('click', () => {
     const on = $('.kbv-cc').getAttribute('aria-pressed') !== 'true';
     $('.kbv-cc').setAttribute('aria-pressed', String(on));
@@ -124,7 +129,7 @@ export function createVoiceCall(options = {}) {
     $('.kbv-controls').hidden = false;
     $('.kbv-mute').setAttribute('aria-pressed', 'false');
     $('.kbv-mute').innerHTML = `${svg('mic')}<span>Mute</span>`;
-    const c = call = { live: true, startedAt: performance.now(), answered: false, muted: false, assistantLine: null };
+    const c = call = { live: true, startedAt: performance.now(), answered: false, muted: false, assistantLine: null, turns: new Map(), lastTurnId: null, aiSpeaking: false };
     const gone = () => c !== call || !c.live;
     setState('calling', 'Calling…');
 
@@ -163,7 +168,7 @@ export function createVoiceCall(options = {}) {
       pc.ontrack = e => {
         c.audio.srcObject = e.streams[0];
         c.audio.play?.().catch(() => {});
-        meter(c, e.streams[0]);
+        watchLevel(c, e.receiver);
       };
       c.micTrack = c.mic.getAudioTracks()[0];
       c.micTrack.enabled = false; // nothing is heard until the call is answered
@@ -207,7 +212,7 @@ export function createVoiceCall(options = {}) {
     c.answeredAt = performance.now();
     c.audio.muted = false;
     c.audio.play?.().catch(() => {});
-    if (c.micTrack) c.micTrack.enabled = !c.muted;
+    updateMic(c);
     setState('live', '0:00');
     send(c, { type: 'response.create', response: { instructions: `You just picked up the phone. Greet the caller in one warm, natural sentence, close to: "${c.greeting}" Say it the way a friendly receptionist would, not like a recording.` } });
     c.tick = setInterval(() => {
@@ -222,7 +227,12 @@ export function createVoiceCall(options = {}) {
     switch (ev.type) {
       case 'response.output_audio_transcript.delta':
       case 'response.audio_transcript.delta':
-        if (!c.assistantLine) c.assistantLine = caption('them', '');
+        aiStarts(c);
+        if (!c.assistantLine) {
+          c.assistantLine = caption('them', '');
+          const t = c.turns.get(c.lastTurnId);
+          if (t && t.state === 'open') { t.state = 'spoke'; t.replyEl = c.assistantLine.el; showUserTurn(t); }
+        }
         c.assistantLine.text += ev.delta || '';
         c.assistantLine.el.querySelector('span').textContent = c.assistantLine.text;
         break;
@@ -231,8 +241,25 @@ export function createVoiceCall(options = {}) {
         if (c.assistantLine && ev.transcript) c.assistantLine.el.querySelector('span').textContent = ev.transcript;
         c.assistantLine = null;
         break;
-      case 'conversation.item.input_audio_transcription.completed':
-        if (isSpeech(ev.transcript)) caption('you', ev.transcript.trim(), true);
+      case 'input_audio_buffer.committed':
+        c.turns.set(ev.item_id, { state: 'open' });
+        c.lastTurnId = ev.item_id;
+        break;
+      case 'conversation.item.input_audio_transcription.completed': {
+        // Show the caller's words only once the receptionist actually answers them; noise it ignores never shows.
+        let t = c.turns.get(ev.item_id);
+        if (!t) { t = { state: 'open' }; c.turns.set(ev.item_id, t); if (!c.lastTurnId) c.lastTurnId = ev.item_id; }
+        t.text = ev.transcript;
+        if (t.state === 'spoke') showUserTurn(t);
+        break;
+      }
+      case 'output_audio_buffer.started':
+        aiStarts(c);
+        break;
+      case 'output_audio_buffer.stopped':
+      case 'output_audio_buffer.cleared':
+        // Only trusted when the browser can't report audio levels (these events can arrive late).
+        if (!c.levelSupported) aiStops(c);
         break;
       case 'response.function_call_arguments.done':
       case 'response.output_item.done': {
@@ -241,6 +268,8 @@ export function createVoiceCall(options = {}) {
         const callId = fc?.call_id;
         if (!callId || c.handledCalls?.has(callId)) break;
         (c.handledCalls ||= new Set()).add(callId);
+        const t = c.turns.get(c.lastTurnId);
+        if (t && t.state === 'open') t.state = 'silent';
         send(c, { type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: '{"ok":true}' } });
         break;
       }
@@ -254,6 +283,69 @@ export function createVoiceCall(options = {}) {
         console.warn('kb-voice:', ev.error?.message || ev);
         break;
     }
+  }
+
+  function showUserTurn(t) {
+    if (t.shown || !isSpeech(t.text)) return;
+    t.shown = true;
+    const el = caption('you', t.text.trim()).el;
+    if (t.replyEl?.parentNode === captions) captions.insertBefore(el, t.replyEl);
+  }
+
+  // --- Half duplex: the caller's mic is off while the receptionist is talking ---------------------
+  function updateMic(c) {
+    if (!c.micTrack) return;
+    c.micTrack.enabled = !!c.answered && !c.muted && !(opt.halfDuplex && c.aiSpeaking);
+    root.classList.toggle('kbv-speaking', !!c.aiSpeaking);
+  }
+  function aiStarts(c) {
+    if (!c.answered || c.aiSpeaking || performance.now() < (c.ignoreUntil || 0)) return;
+    c.aiSpeaking = true;
+    c.speakStart = performance.now();
+    c.lastLoud = 0;
+    updateMic(c);
+  }
+  function aiStops(c) {
+    if (!c.aiSpeaking) return;
+    c.aiSpeaking = false;
+    updateMic(c);
+  }
+  /** Tap to interrupt: stop the reply and hand the line back to the caller. */
+  function interrupt(c) {
+    if (!c?.live || !c.answered || !c.aiSpeaking) return;
+    send(c, { type: 'response.cancel' });
+    send(c, { type: 'output_audio_buffer.clear' });
+    c.ignoreUntil = performance.now() + 700;
+    c.assistantLine = null;
+    aiStops(c);
+  }
+  /**
+   * Watch the receptionist's incoming audio level (RTP audio level: works in Safari and Chrome without
+   * routing the stream through Web Audio). Loud = talking; 0.9 s of quiet = done talking.
+   */
+  function watchLevel(c, receiver) {
+    let lastTs = 0, lastChange = 0;
+    c.levelTimer = setInterval(() => {
+      if (!c.live) return;
+      const now = performance.now();
+      let level = 0;
+      const src = receiver?.getSynchronizationSources?.()[0];
+      if (src) c.levelSupported = true;
+      if (src) {
+        if (src.timestamp !== lastTs) { lastTs = src.timestamp; lastChange = now; }
+        level = now - lastChange < 300 ? (src.audioLevel || 0) : 0;
+      }
+      root.style.setProperty('--kbv-level', c.answered ? Math.min(1, level * 4).toFixed(2) : '0');
+      if (!c.answered) return;
+      if (level > 0.02) {
+        c.lastLoud = now;
+        if (!c.aiSpeaking) aiStarts(c);
+      } else if (c.aiSpeaking && c.levelSupported && now - (c.lastLoud || c.speakStart) > 900 && now - c.speakStart > 700) {
+        aiStops(c);
+      } else if (c.aiSpeaking && now - c.speakStart > 30000) {
+        aiStops(c); // safety net if no end signal ever arrives
+      }
+    }, 80);
   }
 
   function chosenVoice() {
@@ -285,7 +377,7 @@ export function createVoiceCall(options = {}) {
   function toggleMute() {
     if (!call?.live) return;
     call.muted = !call.muted;
-    if (call.micTrack && call.answered) call.micTrack.enabled = !call.muted;
+    updateMic(call);
     const b = $('.kbv-mute');
     b.setAttribute('aria-pressed', String(call.muted));
     b.innerHTML = `${svg(call.muted ? 'micOff' : 'mic')}<span>${call.muted ? 'Unmute' : 'Mute'}</span>`;
@@ -313,12 +405,12 @@ export function createVoiceCall(options = {}) {
   function end(c) {
     c.live = false;
     clearInterval(c.tick);
+    clearInterval(c.levelTimer);
     stopRingback(c);
     stopMedia(c);
     try { c.dc?.close(); } catch { /* already closed */ }
     try { c.pc?.close(); } catch { /* already closed */ }
     try { c.audio.pause(); c.audio.srcObject = null; } catch { /* no audio */ }
-    cancelAnimationFrame(c.raf);
     try { c.ctx?.close(); } catch { /* closed */ }
     root.classList.remove('kbv-user-talking', 'kbv-speaking');
     $('.kbv-controls').hidden = true;
@@ -352,29 +444,6 @@ export function createVoiceCall(options = {}) {
     c.ring = null;
   }
 
-  // Pulse the avatar while the receptionist is speaking.
-  function meter(c, stream) {
-    // Safari can silence a remote WebRTC stream that is also routed into Web Audio, so skip the meter there.
-    if (!c.ctx || /^((?!chrome|chromium|android).)*safari/i.test(navigator.userAgent)) return;
-    try {
-      const src = c.ctx.createMediaStreamSource(stream);
-      const an = c.ctx.createAnalyser();
-      an.fftSize = 256;
-      src.connect(an);
-      const data = new Uint8Array(an.frequencyBinCount);
-      const loop = () => {
-        an.getByteTimeDomainData(data);
-        let peak = 0;
-        for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
-        const level = Math.min(1, peak / 48);
-        root.style.setProperty('--kbv-level', c.answered ? level.toFixed(2) : '0');
-        root.classList.toggle('kbv-speaking', c.answered && level > 0.08);
-        c.raf = requestAnimationFrame(loop);
-      };
-      loop();
-    } catch { /* metering is decorative */ }
-  }
-
   function open() {
     root.hidden = false;
     document.documentElement.classList.add('kbv-locked');
@@ -394,7 +463,7 @@ const tag = typeof document !== 'undefined' && document.querySelector('script[da
 if (tag) {
   const d = tag.dataset;
   const go = () => createVoiceCall({
-    endpoint: d.endpoint, title: d.title, subtitle: d.subtitle, avatar: d.avatar, minRingMs: d.minRingMs, voice: d.voice,
+    endpoint: d.endpoint, title: d.title, subtitle: d.subtitle, avatar: d.avatar, minRingMs: d.minRingMs, voice: d.voice, halfDuplex: d.duplex,
     ...(d.openers ? { openers: d.openers } : {}), ...(d.realtimeUrl ? { realtimeUrl: d.realtimeUrl } : {}),
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
