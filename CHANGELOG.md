@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 (2026-10-20)
+
+- More natural voice: phone instructions rewritten in OpenAI's recommended sections (personality and
+  tone, pacing, verbosity, variety, unclear audio, language, reading numbers); the greeting is spoken
+  naturally instead of read verbatim.
+- Background noise: server VAD with a higher threshold (0.65, `OPENAI_REALTIME_VAD_THRESHOLD`), a
+  silent `wait_for_user` tool for noise, voice isolation on supported phones, noise transcripts hidden
+  from captions, transcription keywords for better captions.
+- Voice choice: `[data-voice-option]` buttons; server accepts only allowed voices.
+
 ## 0.3.0 (2026-10-20)
 
 - Voice: `createVoiceSessionHandler` mints 60-second OpenAI Realtime client secrets (default

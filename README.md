@@ -79,10 +79,20 @@ Page:
 ```
 The endpoint returns a **60-second client secret** for each call; `OPENAI_API_KEY` stays on the server.
 Settings: `OPENAI_REALTIME_MODEL` (default `gpt-realtime-2.1`; `gpt-realtime-2.1-mini` is about 3× cheaper),
-`OPENAI_REALTIME_VOICE` (default `marin`; also `cedar`, `coral`, `sage`…), and in the knowledge base:
+`OPENAI_REALTIME_VOICE` (default `marin`; also `cedar`, `coral`, `sage`…), `OPENAI_REALTIME_VAD_THRESHOLD`
+(default `0.65`; raise toward `0.8` if background noise still triggers it), and in the knowledge base:
 ```js
-voice: { title, subtitle, greeting, voice: 'marin', language: 'en', maxCallSeconds: 300, extraRules: '' },
+voice: { title, subtitle, greeting, voice: 'marin', language: 'en', maxCallSeconds: 300,
+         keywords: ['Business Name', 'Neighborhood', 'trade terms'],   // better captions
+         vadThreshold: 0.65, silenceDurationMs: 650, noiseReduction: 'near_field', extraRules: '' },
 ```
+**Background noise:** the microphone asks the phone for echo cancellation, noise suppression and voice
+isolation (where supported); turn detection needs louder speech than OpenAI's default; and the model has
+a silent `wait_for_user` tool it calls instead of replying to noise, TV or other people. Noise-only
+transcripts are kept out of the captions.
+
+**Picking a voice:** buttons with `data-voice-option="cedar"` (any allowed voice) let a visitor choose;
+the choice is remembered in the browser and used for every call button on the site.
 Calls need HTTPS (or localhost) and microphone permission. Rate limit: 6 calls per 10 minutes per IP.
 Realtime audio is billed per minute of audio in and out, so set a monthly limit on the OpenAI account.
 This is a browser call, not a phone number; connecting a real number (SIP or a phone provider) is a

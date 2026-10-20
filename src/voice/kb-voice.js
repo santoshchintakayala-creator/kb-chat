@@ -18,6 +18,12 @@ const ICONS = {
 };
 const svg = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+/** True for transcripts that look like real words, not noise markers or stray syllables. */
+export const isSpeech = t => {
+  const s = String(t || '').trim();
+  if (s.length < 2 || !/[\p{L}\p{N}]/u.test(s)) return false;
+  return !/^[\[(].*[\])]$/.test(s) && !/^(uh+|um+|hm+|mm+|ah+|oh+)[.!?]?$/i.test(s);
+};
 export const formatDuration = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
 export function createVoiceCall(options = {}) {
@@ -30,6 +36,8 @@ export function createVoiceCall(options = {}) {
     openers: '[data-voice-call]',
     minRingMs: 5000, // pick up on the second ring
     connectTimeoutMs: 20000,
+    voice: '', // optional: one of the voices the server allows
+    voiceStorageKey: 'kb-voice-voice', // remembers a voice picked with [data-voice-option]
     ...Object.fromEntries(Object.entries(options).filter(([, v]) => v !== undefined && v !== '')),
   };
   for (const k of ['minRingMs', 'connectTimeoutMs']) if (typeof opt[k] === 'string') opt[k] = parseFloat(opt[k]) || 0;
@@ -87,7 +95,7 @@ export function createVoiceCall(options = {}) {
 
   fetch(opt.endpoint, { headers: { Accept: 'application/json' } })
     .then(r => (r.ok ? r.json() : null))
-    .then(c => { if (c) config = { ...config, ...c, title: opt.title || c.title, subtitle: opt.subtitle || c.subtitle }; paintHeader(); })
+    .then(c => { if (c) config = { ...config, ...c, title: opt.title || c.title, subtitle: opt.subtitle || c.subtitle }; paintHeader(); markVoiceOptions(); })
     .catch(() => {});
   paintHeader();
 
@@ -130,9 +138,12 @@ export function createVoiceCall(options = {}) {
     const timeout = setTimeout(() => { if (!gone() && !c.answered) fail(c, 'No answer. The AI line didn’t connect in time.'); }, opt.connectTimeoutMs);
     try {
       if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) throw Object.assign(new Error('This browser can’t place calls. Try Chrome or Safari.'), { user: true });
-      const micPromise = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+      const supported = navigator.mediaDevices.getSupportedConstraints?.() || {};
+      const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 };
+      if (supported.voiceIsolation) audio.voiceIsolation = true; // stronger background filtering where the device offers it
+      const micPromise = navigator.mediaDevices.getUserMedia({ audio })
         .catch(() => { throw Object.assign(new Error('Please allow the microphone to talk to the receptionist.'), { user: true }); });
-      const tokenPromise = fetch(opt.endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const tokenPromise = fetch(opt.endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(chosenVoice() ? { voice: chosenVoice() } : {}) })
         .then(async r => {
           const d = await r.json().catch(() => ({}));
           if (!r.ok || !d.value) throw Object.assign(new Error(d.message || 'The AI line isn’t available right now.'), { user: true });
@@ -198,7 +209,7 @@ export function createVoiceCall(options = {}) {
     c.audio.play?.().catch(() => {});
     if (c.micTrack) c.micTrack.enabled = !c.muted;
     setState('live', '0:00');
-    send(c, { type: 'response.create', response: { instructions: `Greet the caller now, warmly and briefly, with: "${c.greeting}"` } });
+    send(c, { type: 'response.create', response: { instructions: `You just picked up the phone. Greet the caller in one warm, natural sentence, close to: "${c.greeting}" Say it the way a friendly receptionist would, not like a recording.` } });
     c.tick = setInterval(() => {
       const secs = (performance.now() - c.answeredAt) / 1000;
       if (root.dataset.state === 'live') statusEl.textContent = formatDuration(secs);
@@ -221,8 +232,18 @@ export function createVoiceCall(options = {}) {
         c.assistantLine = null;
         break;
       case 'conversation.item.input_audio_transcription.completed':
-        if (ev.transcript?.trim()) caption('you', ev.transcript.trim(), true);
+        if (isSpeech(ev.transcript)) caption('you', ev.transcript.trim(), true);
         break;
+      case 'response.function_call_arguments.done':
+      case 'response.output_item.done': {
+        // The model calls wait_for_user when it only heard noise: acknowledge silently and keep listening.
+        const fc = ev.type === 'response.output_item.done' ? (ev.item?.type === 'function_call' ? ev.item : null) : ev;
+        const callId = fc?.call_id;
+        if (!callId || c.handledCalls?.has(callId)) break;
+        (c.handledCalls ||= new Set()).add(callId);
+        send(c, { type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: '{"ok":true}' } });
+        break;
+      }
       case 'input_audio_buffer.speech_started':
         root.classList.add('kbv-user-talking');
         break;
@@ -234,6 +255,20 @@ export function createVoiceCall(options = {}) {
         break;
     }
   }
+
+  function chosenVoice() {
+    try { return localStorage.getItem(opt.voiceStorageKey) || opt.voice || ''; } catch { return opt.voice || ''; }
+  }
+  function markVoiceOptions() {
+    const current = chosenVoice() || config.voice || '';
+    document.querySelectorAll('[data-voice-option]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.voiceOption === current)));
+  }
+  document.addEventListener('click', e => {
+    const b = e.target.closest?.('[data-voice-option]');
+    if (!b) return;
+    try { localStorage.setItem(opt.voiceStorageKey, b.dataset.voiceOption); } catch { /* storage unavailable */ }
+    markVoiceOptions();
+  });
 
   function caption(who, text, beforeAssistant = false) {
     const el = document.createElement('p');
@@ -359,7 +394,7 @@ const tag = typeof document !== 'undefined' && document.querySelector('script[da
 if (tag) {
   const d = tag.dataset;
   const go = () => createVoiceCall({
-    endpoint: d.endpoint, title: d.title, subtitle: d.subtitle, avatar: d.avatar, minRingMs: d.minRingMs,
+    endpoint: d.endpoint, title: d.title, subtitle: d.subtitle, avatar: d.avatar, minRingMs: d.minRingMs, voice: d.voice,
     ...(d.openers ? { openers: d.openers } : {}), ...(d.realtimeUrl ? { realtimeUrl: d.realtimeUrl } : {}),
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
