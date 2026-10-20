@@ -1,16 +1,18 @@
 import { buildIndex, search, exactMatch, isSmallTalk } from './retrieval.mjs';
 import { buildSystemPrompt, OUT_OF_SCOPE } from './prompt.mjs';
-import { streamChat } from './openai.mjs';
+import { streamChat, isReasoningModel, defaultReasoningEffort } from './openai.mjs';
 
 const DEFAULTS = {
-  model: 'gpt-4.1-mini',
+  model: 'gpt-6-luna',
   maxMessageChars: 500,
   maxTurns: 8,
-  maxTokens: 350,
+  maxTokens: 400,
+  reasoningMaxTokens: 1600,
   temperature: 0.2,
   contextEntries: 10,
   fallbackMinScore: 2.5,
   fallbackMinCoverage: 0.5,
+  maxOptions: 4,
   rateLimit: { windowMs: 10 * 60 * 1000, max: 30 },
   timeoutMs: 25000,
 };
@@ -18,9 +20,10 @@ const DEFAULTS = {
 /**
  * Create a Node-style (req, res) handler that answers chat messages from one knowledge base.
  *
- * GET  -> widget config (title, greeting, starter questions, contact links)
+ * GET  -> widget config (title, greeting, starter options, contact links)
  * POST -> { messages: [{ role: 'user'|'assistant', content }] }  streams NDJSON events:
- *         {"t":"delta","v":"text"}  ...  {"t":"done","source":"ai|kb|refusal","suggestions":[...]}
+ *         {"t":"delta","v":"text"}  ...  {"t":"done","source":"ai|kb|refusal","options":[...],"suggestions":[...]}
+ *         options: [{ type: 'ask', label }] (tap to ask) or [{ type: 'action', label, href, icon, primary }]
  *
  * The OpenAI key is read from options.apiKey or process.env.OPENAI_API_KEY on the server only.
  * Without a key the handler still answers from the knowledge base (source "kb").
@@ -31,7 +34,8 @@ export function createChatHandler(options = {}) {
   const env = options.env || process.env;
   const cfg = { ...DEFAULTS, ...options, rateLimit: { ...DEFAULTS.rateLimit, ...(options.rateLimit || {}) } };
   const apiKey = () => options.apiKey ?? env.OPENAI_API_KEY ?? '';
-  const model = () => options.model ?? env.OPENAI_MODEL ?? DEFAULTS.model;
+  const model = () => options.model ?? env.OPENAI_MODEL ?? options.defaultModel ?? DEFAULTS.model;
+  const effortFor = m => options.reasoningEffort ?? env.OPENAI_REASONING_EFFORT ?? defaultReasoningEffort(m);
   const baseUrl = options.baseUrl ?? env.OPENAI_BASE_URL;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const allowed = parseOrigins(options.allowedOrigins ?? env.KB_CHAT_ALLOWED_ORIGINS);
@@ -41,6 +45,31 @@ export function createChatHandler(options = {}) {
 
   const refusal = kb.refusal || 'Sorry, I can only help with questions about this business.';
   const starters = (kb.starters || kb.qa.slice(0, 4).map(e => e.q)).slice(0, 6);
+  const actions = kb.actions || {};
+  const defaultOptions = kb.defaultOptions || (actions.call ? ['call'] : []);
+
+  /** Turn option keys/questions into option objects: action keys -> buttons, anything else -> a question to ask. */
+  function toOptions(list, exclude = '') {
+    const out = [], seen = new Set([String(exclude).toLowerCase()]);
+    for (const item of list || []) {
+      if (out.length >= cfg.maxOptions) break;
+      const key = typeof item === 'string' ? item : item?.label;
+      if (!key || seen.has(key.toLowerCase())) continue;
+      seen.add(key.toLowerCase());
+      const a = typeof item === 'string' ? actions[item] : item.href ? item : null;
+      if (a?.href) out.push({ type: 'action', label: a.label, href: a.href, icon: a.icon || 'link', primary: !!a.primary });
+      else out.push({ type: 'ask', label: key });
+    }
+    return out;
+  }
+  /** Options after an answer: the entry's own options, else related questions plus the default actions. */
+  function optionsFor(entry, related, asked) {
+    if (entry?.options?.length) return toOptions(entry.options, asked);
+    const follow = related.map(r => r.entry.q).filter(q => q !== entry?.q);
+    return toOptions([...follow.slice(0, cfg.maxOptions - defaultOptions.length), ...defaultOptions], asked);
+  }
+  const startOptions = () => toOptions(kb.startOptions || starters);
+  const refusalOptions = () => toOptions([...starters.slice(0, Math.max(1, cfg.maxOptions - defaultOptions.length)), ...defaultOptions]);
 
   return async function handler(req, res) {
     try {
@@ -55,6 +84,7 @@ export function createChatHandler(options = {}) {
           placeholder: kb.widget?.placeholder || 'Type your question…',
           footnote: kb.widget?.footnote || '',
           starters,
+          startOptions: startOptions(),
           phone: kb.business?.phone || '',
           phoneHref: kb.business?.phoneHref || '',
           bookingUrl: kb.business?.bookingUrl || '',
@@ -80,11 +110,10 @@ export function createChatHandler(options = {}) {
       });
 
       const related = search(index, question, cfg.contextEntries);
-      const suggest = exclude => related.map(r => r.entry.q).filter(q => q !== exclude).slice(0, 3);
 
       // 1) A starter question or an exact knowledge-base question: answer directly, no model call.
       const exact = exactMatch(index, question);
-      if (exact) return finish(res, exact.a, 'kb', suggest(exact.q));
+      if (exact) return finish(res, exact.a, 'kb', optionsFor(exact, related, question));
 
       // 2) No key configured: best knowledge-base match, or the refusal.
       if (!apiKey()) return finish(res, ...fallback(question, related));
@@ -95,14 +124,17 @@ export function createChatHandler(options = {}) {
         { role: 'system', content: buildSystemPrompt(kb, entries) },
         ...history.slice(-cfg.maxTurns * 2),
       ];
+      const m = model();
+      const effort = isReasoningModel(m) ? effortFor(m) : null;
+      const maxTokens = effort && effort !== 'none' ? Math.max(cfg.maxTokens, cfg.reasoningMaxTokens) : cfg.maxTokens;
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
       let held = '';
       let streaming = false;
       let text = '';
       try {
-        for await (const delta of streamChat({ apiKey: apiKey(), baseUrl, model: model(), messages, maxTokens: cfg.maxTokens,
-          temperature: cfg.temperature, fetchImpl, signal: ctrl.signal })) {
+        for await (const delta of streamChat({ apiKey: apiKey(), baseUrl, model: m, messages, maxTokens,
+          temperature: cfg.temperature, reasoningEffort: effort, fetchImpl, signal: ctrl.signal })) {
           if (!streaming) {
             held += delta;
             if (held.trimStart().startsWith(OUT_OF_SCOPE) || OUT_OF_SCOPE.startsWith(held.trimStart())) {
@@ -118,7 +150,7 @@ export function createChatHandler(options = {}) {
           }
         }
       } catch (err) {
-        log.warn?.('kb-chat: model call failed', err.status || '', err.message);
+        log.warn?.('kb-chat: model call failed', err.status || '', err.message, err.detail || '');
         if (!streaming) return finish(res, ...fallback(question, related, true));
         write(res, { t: 'delta', v: '\n\n' + (kb.errorText || 'Sorry, I lost my connection.') });
       } finally {
@@ -128,9 +160,10 @@ export function createChatHandler(options = {}) {
       if (!streaming || text.includes(OUT_OF_SCOPE)) {
         if (streaming) write(res, { t: 'replace', v: refusal });
         else write(res, { t: 'delta', v: refusal });
-        return done(res, 'refusal', starters.slice(0, 3));
+        return done(res, 'refusal', refusalOptions());
       }
-      return done(res, 'ai', suggest(null));
+      const ref = search(index, `${question} ${text}`, 4);
+      return done(res, 'ai', optionsFor(ref[0]?.entry, ref.length ? ref : related, question));
     } catch (err) {
       log.error?.('kb-chat: handler error', err.message);
       if (!res.headersSent) return json(res, 500, { error: 'server_error' });
@@ -141,12 +174,15 @@ export function createChatHandler(options = {}) {
 
   function fallback(question, related, upstreamFailed = false) {
     if (isSmallTalk(question)) {
-      return [/^(thanks|thank you|thx)/i.test(question.trim()) ? (kb.thanksText || 'You’re welcome! Anything else I can help with?') : (kb.greeting || 'Hi! How can I help?'), 'kb', starters.slice(0, 3)];
+      const thanks = /^(thanks|thank you|thx)/i.test(question.trim());
+      return [thanks ? (kb.thanksText || 'You’re welcome! Anything else I can help with?') : (kb.greeting || 'Hi! How can I help?'), 'kb', startOptions()];
     }
     const best = related[0];
-    if (best && best.score >= cfg.fallbackMinScore && best.coverage >= cfg.fallbackMinCoverage) return [best.entry.a, 'kb', related.slice(1, 4).map(r => r.entry.q)];
-    if (upstreamFailed && kb.errorText) return [kb.errorText, 'kb', starters.slice(0, 3)];
-    return [refusal, 'refusal', starters.slice(0, 3)];
+    if (best && best.score >= cfg.fallbackMinScore && best.coverage >= cfg.fallbackMinCoverage) {
+      return [best.entry.a, 'kb', optionsFor(best.entry, related.slice(1), question)];
+    }
+    if (upstreamFailed && kb.errorText) return [kb.errorText, 'kb', toOptions(defaultOptions.length ? [...defaultOptions, ...(actions.book ? ['book'] : [])] : starters)];
+    return [refusal, 'refusal', refusalOptions()];
   }
 }
 
@@ -168,12 +204,13 @@ function cleanHistory(messages, cfg) {
   return out;
 }
 
-function finish(res, text, source, suggestions) {
+function finish(res, text, source, options) {
   write(res, { t: 'delta', v: text });
-  return done(res, source, suggestions);
+  return done(res, source, options);
 }
-function done(res, source, suggestions) {
-  write(res, { t: 'done', source, suggestions: suggestions || [] });
+function done(res, source, options = []) {
+  const suggestions = options.filter(o => o.type === 'ask').map(o => o.label);
+  write(res, { t: 'done', source, options, suggestions });
   res.end();
 }
 function write(res, event) { res.write(JSON.stringify(event) + '\n'); }

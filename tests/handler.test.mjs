@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createChatHandler, buildIndex, search, exactMatch, OUT_OF_SCOPE } from '../src/server/index.mjs';
-import { renderText } from '../src/widget/kb-chat.js';
+import { renderText, revealText, isSafeUrl } from '../src/widget/kb-chat.js';
 import kb from '../examples/kb.example.mjs';
 
 // --- helpers ---------------------------------------------------------------------------
@@ -100,11 +100,75 @@ test('a late out-of-scope token replaces anything already streamed', async () =>
   assert.equal(res.events().at(-1).source, 'refusal');
 });
 
-test('reasoning models are sent without temperature', async () => {
-  const calls = [];
+test('reasoning models get a reasoning effort instead of temperature', async () => {
+  let calls = [];
   await createChatHandler({ kb, apiKey: 'sk-x', model: 'gpt-5-mini', fetchImpl: fakeOpenAI('ok', calls), log: quiet })(ask('do you fix leaks'), mockRes());
   assert.equal('temperature' in calls[0].body, false);
-  assert.equal(calls[0].body.max_completion_tokens, 350);
+  assert.equal(calls[0].body.reasoning_effort, 'minimal');
+  assert.equal(calls[0].body.max_completion_tokens, 1600);
+  calls = [];
+  await createChatHandler({ kb, apiKey: 'sk-x', env: {}, fetchImpl: fakeOpenAI('ok', calls), log: quiet })(ask('do you fix leaks'), mockRes());
+  assert.equal(calls[0].body.model, 'gpt-6-luna');
+  assert.equal(calls[0].body.reasoning_effort, 'none');
+  assert.equal(calls[0].body.max_completion_tokens, 400);
+  calls = [];
+  await createChatHandler({ kb, apiKey: 'sk-x', env: { OPENAI_MODEL: 'gpt-6.1-sol', OPENAI_REASONING_EFFORT: 'low' }, defaultModel: 'gpt-6-luna', fetchImpl: fakeOpenAI('ok', calls), log: quiet })(ask('do you fix leaks'), mockRes());
+  assert.equal(calls[0].body.model, 'gpt-6.1-sol');
+  assert.equal(calls[0].body.reasoning_effort, 'low');
+});
+
+test('a rejected optional parameter is dropped and the request retried', async () => {
+  const calls = [];
+  const ok = fakeOpenAI('Retried fine.', calls);
+  let first = true;
+  const fetchImpl = async (url, init) => {
+    if (first) { first = false; calls.push({ body: JSON.parse(init.body) }); return new Response('{"error":{"message":"Unsupported parameter: reasoning_effort"}}', { status: 400 }); }
+    return ok(url, init);
+  };
+  const res = mockRes();
+  await createChatHandler({ kb, apiKey: 'sk-x', env: {}, fetchImpl, log: quiet })(ask('can you unclog a kitchen sink'), res);
+  assert.equal(res.text(), 'Retried fine.');
+  assert.equal(calls[0].body.reasoning_effort, 'none');
+  assert.equal('reasoning_effort' in calls[1].body, false);
+});
+
+test('answers come with tap-able options: entry options, actions and follow-ups', async () => {
+  const handler = createChatHandler({ kb, env: {}, log: quiet });
+  let res = mockRes();
+  await handler(ask('How can I pay?'), res);
+  let done = res.events().at(-1);
+  assert.deepEqual(done.options, [
+    { type: 'ask', label: 'How much does drain cleaning cost?' },
+    { type: 'action', label: 'Book online', href: '/book/', icon: 'calendar', primary: false },
+  ]);
+  assert.deepEqual(done.suggestions, ['How much does drain cleaning cost?']);
+  res = mockRes();
+  await handler(ask('Do you serve my area?'), res);
+  done = res.events().at(-1);
+  assert.ok(done.options.length <= 4 && done.options.length >= 2);
+  assert.ok(!done.options.some(o => o.label === 'Do you serve my area?'), 'never offers the question just asked');
+  assert.deepEqual(done.options.slice(-2).map(o => o.label), ['Call now', 'Book online']);
+  res = mockRes();
+  await handler(ask('who won the world cup'), res);
+  done = res.events().at(-1);
+  assert.equal(done.source, 'refusal');
+  assert.equal(done.options.at(-2).label, 'Call now');
+  assert.equal(done.options[0].label, 'What services do you offer?');
+});
+
+test('model answers get options from the closest knowledge-base entry', async () => {
+  const res = mockRes();
+  await createChatHandler({ kb, apiKey: 'sk-x', fetchImpl: fakeOpenAI('We take cash, checks and cards.'), log: quiet })(ask('what forms of payment are ok'), res);
+  const done = res.events().at(-1);
+  assert.equal(done.source, 'ai');
+  assert.equal(done.options[0].label, 'How much does drain cleaning cost?');
+});
+
+test('GET config includes starting options', async () => {
+  const res = mockRes();
+  await createChatHandler({ kb, env: {}, log: quiet })({ method: 'GET', headers: {} }, res);
+  const body = JSON.parse(res.chunks.join(''));
+  assert.deepEqual(body.startOptions.map(o => o.label), kb.starters);
 });
 
 test('without a key it answers from the knowledge base or refuses', async () => {
@@ -177,4 +241,16 @@ test('renderer escapes HTML and only allows safe links', () => {
   assert.ok(!html.includes('<img'));
   assert.ok(!html.includes('javascript:'));
   assert.match(renderText('- one\n- two'), /<ul><li>one<\/li><li>two<\/li><\/ul>/);
+});
+
+test('typed-out text never shows half-written markup', () => {
+  const t = 'Call **now** or use the [request form](/book/) today.';
+  assert.equal(revealText(t, 7), 'Call ');
+  assert.equal(revealText(t, 9), 'Call no');
+  assert.equal(revealText(t, 13), 'Call **now** ');
+  assert.equal(revealText(t, 32), 'Call **now** or use the request');
+  assert.equal(revealText(t, 40), 'Call **now** or use the request form');
+  assert.equal(revealText(t, t.length), t);
+  assert.ok(isSafeUrl('tel:911') && isSafeUrl('tel:+17136597669') && isSafeUrl('/book/'));
+  assert.ok(!isSafeUrl('javascript:alert(1)') && !isSafeUrl('http://insecure.example'));
 });

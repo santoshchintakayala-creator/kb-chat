@@ -6,8 +6,9 @@ mobile-friendly chat panel.
 
 - **Widget** (`src/widget/`): one ES module and one stylesheet, no dependencies. Floating panel on
   desktop, full-screen sheet on phones (keeps the input above the keyboard), message bubbles, a
-  "Thinking…" indicator, streamed answers, suggested questions, safe links (tap-to-call, site
-  pages), conversation kept for the browser tab session.
+  typing indicator, answers typed out at a steady pace, tap-able options under every answer
+  (follow-up questions and buttons like Call, Book, Directions) so people rarely need to type,
+  safe links, conversation kept for the browser tab session.
 - **Server** (`src/server/`): a Node `(req, res)` handler for Vercel functions or any Node server.
   Keyword retrieval picks the relevant knowledge, a strict prompt keeps the model on topic, and an
   out-of-scope token is swapped for the business's own refusal text.
@@ -49,7 +50,8 @@ mobile-friendly chat panel.
    | Variable | Required | Purpose |
    |---|---|---|
    | `OPENAI_API_KEY` | for AI answers | Never put it in the widget, a page or the repo. |
-   | `OPENAI_MODEL` | no | Defaults to `gpt-4.1-mini`. |
+   | `OPENAI_MODEL` | no | Defaults to `gpt-6-luna`. Any Chat Completions model works. |
+   | `OPENAI_REASONING_EFFORT` | no | For reasoning models (o-series, GPT-5, GPT-6). Default: `none` for GPT-6, `minimal` for GPT-5. |
    | `KB_CHAT_ALLOWED_ORIGINS` | no | Comma-separated origins allowed to call the endpoint. Default: same site only. |
    | `OPENAI_BASE_URL` | no | For a proxy or compatible API. |
 
@@ -63,11 +65,21 @@ export default {
   widget: { title, subtitle, placeholder, footnote },
   greeting, refusal, thanksText, errorText,      // fixed texts the assistant uses
   starters: ['What services do you offer?'],      // shown as tappable questions
+  actions: {                                      // buttons the assistant can offer
+    call: { label: 'Call now', href: 'tel:+1555…', icon: 'phone', primary: true },
+    book: { label: 'Book online', href: '/book/', icon: 'calendar' },
+  },
+  defaultOptions: ['call', 'book'],               // shown when an answer has no options of its own
   facts: ['Address …', 'Hours are not published …'], // always given to the model
   synonyms: { toilet: ['drain', 'clog'] },        // helps keyword search
-  qa: [{ q: 'Question?', a: 'Answer with [links](tel:+1555…).', tags: ['keywords'] }],
+  qa: [{ q: 'Question?', a: 'Answer with [links](tel:+1555…).', tags: ['keywords'],
+          options: ['Another question in qa?', 'call'] }],   // quick replies after this answer
 };
 ```
+
+Options are action keys or other `qa` questions (tapping a question answers it straight from the
+knowledge base). Icons: `phone`, `calendar`, `map`, `message`, `star`, `link`. Without `options`, an
+answer offers related questions plus `defaultOptions`; a refusal offers starters plus `defaultOptions`.
 
 Answers may use `**bold**`, `- lists` and markdown links to `tel:`, `mailto:`, site paths (`/page/`)
 or `https://` URLs. Anything else is shown as plain text.
@@ -87,17 +99,22 @@ or `https://` URLs. Anything else is shown as plain text.
 | `openers` | `[data-chat-open]` | Selector for elements that open the chat |
 | `storageKey` | `kb-chat` | Session storage key for the conversation |
 | `accent` | `#1a56db` | Main color |
+| `typingSpeed` | `50` | Characters per second when an answer is typed out |
+| `maxTypingSeconds` | `7` | Long answers speed up so none takes longer |
+| `minTypingMs` | `900` | How long the typing dots show at least |
 
 Theme further with CSS custom properties, written as `html .kbc { --kbc-accent: #…; }` so your values
 win whatever the stylesheet order (`--kbc-accent`, `--kbc-head-bg`, `--kbc-ink`, `--kbc-bot`, `--kbc-font`,
-`--kbc-bottom`, …). All widget rules are scoped under `.kbc`, so a site's generic `p`, `h2`, `button` or
+`--kbc-bottom`, `--kbc-primary-bg`, `--kbc-primary-ink`, `--kbc-typing-dot`, …). People who turn on
+"reduce motion" get answers instantly, without the typing animation. All widget rules are scoped under `.kbc`, so a site's generic `p`, `h2`, `button` or
 `textarea` styles don't leak in. The returned object has `open()`, `close()` and `ask(text)`.
 
 ## Server protocol
 
 - `GET /api/chat` → widget config (title, greeting, starters, contact links, `mode: "ai" | "kb"`).
 - `POST /api/chat` with `{ "messages": [{ "role": "user", "content": "…" }] }` → streamed
-  newline-delimited JSON: `{"t":"delta","v":"text"}` … `{"t":"done","source":"ai|kb|refusal","suggestions":[…]}`.
+  newline-delimited JSON: `{"t":"delta","v":"text"}` … `{"t":"done","source":"ai|kb|refusal","options":[…]}`,
+  where each option is `{"type":"ask","label"}` or `{"type":"action","label","href","icon","primary"}`.
 - Limits: 500 characters per message, last 8 exchanges, 30 requests per 10 minutes per IP (all
   configurable in `createChatHandler`).
 

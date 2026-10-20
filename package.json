@@ -1,6 +1,6 @@
 {
   "name": "kb-chat",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Reusable AI chat widget and guarded server handler that answers only from a business knowledge base.",
   "private": true,
   "type": "module",
@@ -9,10 +9,17 @@
     "./widget": "./src/widget/kb-chat.js",
     "./widget.css": "./src/widget/kb-chat.css"
   },
-  "files": ["src", "examples", "README.md", "CHANGELOG.md"],
+  "files": [
+    "src",
+    "examples",
+    "README.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "test": "node --test tests/*.test.mjs",
     "dev": "node examples/dev-server.mjs"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }
