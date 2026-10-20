@@ -27,7 +27,7 @@ function stem(word) {
 }
 
 export function tokenize(text) {
-  return normalize(text).split(' ').filter(w => w && !STOP.has(w)).map(stem);
+  return normalize(text).split(' ').filter(w => w && !STOP.has(w)).map(stem).filter(w => !STOP.has(w));
 }
 
 /** Build a search index once per knowledge base. */
