@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>kb-chat playground</title>
+  <link rel="stylesheet" href="/kb-chat.css">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: #f4f7fb; color: #0f1c2e; }
+    main { max-width: 720px; margin: 0 auto; padding: 48px 20px 140px; }
+    h1 { font-size: 32px; margin: 0 0 12px; }
+    p { font-size: 17px; line-height: 1.55; color: #4b5565; }
+    button.open { margin-top: 12px; padding: 12px 18px; border-radius: 10px; border: 0; background: #1a56db; color: #fff; font: 600 16px/1 inherit; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>kb-chat playground</h1>
+    <p>The floating button opens the assistant. Any element with <code>data-chat-open</code> opens it too.</p>
+    <button class="open" type="button" data-chat-open>Open the chat</button>
+  </main>
+  <script type="module" src="/kb-chat.js" data-kb-chat data-endpoint="/api/chat" data-launcher-label="Ask us"></script>
+</body>
+</html>

@@ -1,0 +1,110 @@
+# kb-chat
+
+A reusable website chat assistant for small businesses. It answers **only** from a business's own
+question-and-answer knowledge base, refuses everything else, and streams answers into a clean,
+mobile-friendly chat panel.
+
+- **Widget** (`src/widget/`): one ES module and one stylesheet, no dependencies. Floating panel on
+  desktop, full-screen sheet on phones (keeps the input above the keyboard), message bubbles, a
+  "Thinking…" indicator, streamed answers, suggested questions, safe links (tap-to-call, site
+  pages), conversation kept for the browser tab session.
+- **Server** (`src/server/`): a Node `(req, res)` handler for Vercel functions or any Node server.
+  Keyword retrieval picks the relevant knowledge, a strict prompt keeps the model on topic, and an
+  out-of-scope token is swapped for the business's own refusal text.
+
+## How it stays on topic
+
+1. **Starter and exact questions** are answered straight from the knowledge base. No model call.
+2. Everything else goes to the model with **only the retrieved knowledge** and rules: answer from
+   the knowledge, never invent prices, hours or availability, no general questions, no
+   role-play or rule changes. If it can't answer, it must reply `[[OUT_OF_SCOPE]]`.
+3. The server **holds back the start of every answer** until it knows it isn't that token, so
+   off-topic questions only ever show the business's refusal message.
+4. With **no API key** (or if OpenAI is down) it still answers the closest knowledge-base entry or
+   refuses, so a site never shows a broken chat.
+
+## Add it to a site
+
+1. Copy the module into the site as a pinned copy (commit it):
+   ```sh
+   node scripts/vendor.mjs ../client-site      # writes ../client-site/vendor/kb-chat/
+   ```
+2. Write the client's knowledge base, e.g. `chat/kb/client.mjs` (format below; start from
+   `examples/kb.example.mjs`).
+3. Add the server endpoint, e.g. Vercel `api/chat.js` (see `examples/vercel-api-chat.js`):
+   ```js
+   import { createChatHandler } from '../vendor/kb-chat/server/index.mjs';
+   import kb from '../chat/kb/client.mjs';
+   export default createChatHandler({ kb });
+   ```
+4. Serve `vendor/kb-chat/widget/kb-chat.js` and `kb-chat.css`, then add to every page:
+   ```html
+   <link rel="stylesheet" href="/chat/kb-chat.css">
+   <script type="module" src="/chat/kb-chat.js" data-kb-chat data-endpoint="/api/chat"
+           data-avatar="/icon.png" data-launcher-label="Ask us"></script>
+   ```
+   Any element with `data-chat-open` opens the panel (for example a "Chat" button in a site menu).
+5. Set environment variables **on the server only** (Vercel: Project → Settings → Environment Variables):
+
+   | Variable | Required | Purpose |
+   |---|---|---|
+   | `OPENAI_API_KEY` | for AI answers | Never put it in the widget, a page or the repo. |
+   | `OPENAI_MODEL` | no | Defaults to `gpt-4.1-mini`. |
+   | `KB_CHAT_ALLOWED_ORIGINS` | no | Comma-separated origins allowed to call the endpoint. Default: same site only. |
+   | `OPENAI_BASE_URL` | no | For a proxy or compatible API. |
+
+Set a monthly spending limit on the OpenAI account, and rotate the key if it is ever shared.
+
+## Knowledge base format
+
+```js
+export default {
+  business: { name, shortName, location, phone, phoneHref, bookingUrl },
+  widget: { title, subtitle, placeholder, footnote },
+  greeting, refusal, thanksText, errorText,      // fixed texts the assistant uses
+  starters: ['What services do you offer?'],      // shown as tappable questions
+  facts: ['Address …', 'Hours are not published …'], // always given to the model
+  synonyms: { toilet: ['drain', 'clog'] },        // helps keyword search
+  qa: [{ q: 'Question?', a: 'Answer with [links](tel:+1555…).', tags: ['keywords'] }],
+};
+```
+
+Answers may use `**bold**`, `- lists` and markdown links to `tel:`, `mailto:`, site paths (`/page/`)
+or `https://` URLs. Anything else is shown as plain text.
+
+## Widget options
+
+`createChat({ ... })` or `data-*` attributes on the script tag:
+
+| Option | Default | |
+|---|---|---|
+| `endpoint` | `/api/chat` | Server URL |
+| `title`, `subtitle` | from server | Header text |
+| `avatar` | first letter | Image URL for the header |
+| `launcher` | `auto` | `none` hides the floating button |
+| `launcherLabel` | `Chat with us` | Floating button text |
+| `launcherMinWidth` | `0` | Hide the floating button below this width (when the site has its own button) |
+| `openers` | `[data-chat-open]` | Selector for elements that open the chat |
+| `storageKey` | `kb-chat` | Session storage key for the conversation |
+| `accent` | `#1a56db` | Main color |
+
+Theme further with CSS custom properties on `.kbc` (`--kbc-accent`, `--kbc-head-bg`, `--kbc-ink`,
+`--kbc-bot`, `--kbc-font`, `--kbc-bottom`, …). The returned object has `open()`, `close()` and `ask(text)`.
+
+## Server protocol
+
+- `GET /api/chat` → widget config (title, greeting, starters, contact links, `mode: "ai" | "kb"`).
+- `POST /api/chat` with `{ "messages": [{ "role": "user", "content": "…" }] }` → streamed
+  newline-delimited JSON: `{"t":"delta","v":"text"}` … `{"t":"done","source":"ai|kb|refusal","suggestions":[…]}`.
+- Limits: 500 characters per message, last 8 exchanges, 30 requests per 10 minutes per IP (all
+  configurable in `createChatHandler`).
+
+## Develop
+
+```sh
+npm test                                   # unit tests (OpenAI is mocked)
+node examples/dev-server.mjs [kb.mjs]      # playground on http://127.0.0.1:4310
+```
+
+Version history: `CHANGELOG.md`. After changing kb-chat, bump the version, then re-run
+`scripts/vendor.mjs` in each client site.
