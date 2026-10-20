@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 (2026-10-20)
+
+- Voice: `createVoiceSessionHandler` mints 60-second OpenAI Realtime client secrets (default
+  `gpt-realtime-2.1`, voice `marin`, semantic VAD, transcription) with phone instructions built from the
+  knowledge base; `src/voice/kb-voice.js` call screen with ringback, pickup on the second ring, greeting,
+  captions, mute, timer, hang up, demo time limit and failure states. Shared HTTP helpers moved to
+  `src/server/http.mjs`.
+
 ## 0.2.0 (2026-10-20)
 
 - Default model `gpt-6-luna` with `reasoning_effort: none`; GPT-5/GPT-6/o-series get a reasoning effort

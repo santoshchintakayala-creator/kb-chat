@@ -5,21 +5,25 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createChatHandler } from '../src/server/index.mjs';
+import { createChatHandler, createVoiceSessionHandler } from '../src/server/index.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const kbPath = resolve(process.argv[2] || resolve(here, 'kb.example.mjs'));
 const kb = (await import(pathToFileURL(kbPath).href)).default;
 const chat = createChatHandler({ kb });
+const voice = createVoiceSessionHandler({ kb });
 const files = {
   '/': [resolve(here, 'index.html'), 'text/html; charset=utf-8'],
   '/kb-chat.js': [resolve(here, '../src/widget/kb-chat.js'), 'application/javascript'],
   '/kb-chat.css': [resolve(here, '../src/widget/kb-chat.css'), 'text/css'],
+  '/kb-voice.js': [resolve(here, '../src/voice/kb-voice.js'), 'application/javascript'],
+  '/kb-voice.css': [resolve(here, '../src/voice/kb-voice.css'), 'text/css'],
 };
 
 createServer(async (req, res) => {
   const path = new URL(req.url, 'http://localhost').pathname;
   if (path === '/api/chat') return chat(req, res);
+  if (path === '/api/voice') return voice(req, res);
   const file = files[path];
   if (!file) { res.writeHead(404); return res.end('Not found'); }
   res.writeHead(200, { 'Content-Type': file[1] || 'application/octet-stream' });

@@ -57,6 +57,37 @@ mobile-friendly chat panel.
 
 Set a monthly spending limit on the OpenAI account, and rotate the key if it is ever shared.
 
+## Voice: AI phone receptionist (browser call)
+
+`src/voice/` adds a phone-call screen: tap a button, it **rings**, then an AI receptionist **picks up on
+the second ring** and talks with the visitor out loud over WebRTC (OpenAI Realtime API). It answers
+from the same knowledge base with phone-specific rules (short spoken replies, no links, Spanish if the
+caller speaks it, emergencies first, politely declines anything off-topic). Live captions, mute, a call
+timer, hang up, a 5-minute demo limit and a "call the real office line" link are built in.
+
+Server (e.g. Vercel `api/voice.js`):
+```js
+import { createVoiceSessionHandler } from '../vendor/kb-chat/server/index.mjs';
+import kb from '../chat/kb/client.mjs';
+export default createVoiceSessionHandler({ kb });
+```
+Page:
+```html
+<link rel="stylesheet" href="/voice/kb-voice.css">
+<script type="module" src="/voice/kb-voice.js" data-kb-voice data-endpoint="/api/voice" data-avatar="/icon.png"></script>
+<button type="button" data-voice-call>Call us</button>
+```
+The endpoint returns a **60-second client secret** for each call; `OPENAI_API_KEY` stays on the server.
+Settings: `OPENAI_REALTIME_MODEL` (default `gpt-realtime-2.1`; `gpt-realtime-2.1-mini` is about 3× cheaper),
+`OPENAI_REALTIME_VOICE` (default `marin`; also `cedar`, `coral`, `sage`…), and in the knowledge base:
+```js
+voice: { title, subtitle, greeting, voice: 'marin', language: 'en', maxCallSeconds: 300, extraRules: '' },
+```
+Calls need HTTPS (or localhost) and microphone permission. Rate limit: 6 calls per 10 minutes per IP.
+Realtime audio is billed per minute of audio in and out, so set a monthly limit on the OpenAI account.
+This is a browser call, not a phone number; connecting a real number (SIP or a phone provider) is a
+separate step.
+
 ## Knowledge base format
 
 ```js

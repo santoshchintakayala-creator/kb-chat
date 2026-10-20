@@ -20,5 +20,6 @@ await rm(dest, { recursive: true, force: true });
 await mkdir(dest, { recursive: true });
 await cp(resolve(root, 'src', 'server'), resolve(dest, 'server'), { recursive: true });
 await cp(resolve(root, 'src', 'widget'), resolve(dest, 'widget'), { recursive: true });
+await cp(resolve(root, 'src', 'voice'), resolve(dest, 'voice'), { recursive: true });
 await writeFile(resolve(dest, 'VERSION'), `kb-chat ${pkg.version} (${commit})\nDo not edit files here; change kb-chat and re-run scripts/vendor.mjs.\n`);
 console.log(`Copied kb-chat ${pkg.version} (${commit}) to ${dest}`);
